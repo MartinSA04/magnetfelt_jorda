@@ -52,6 +52,11 @@ class MagneticFieldCalc(BaseModel):
     _acceleration_data: dict[str, list[Vector3d]] = {}
     _magnet_data: dict[str, list[Vector3d]] = {}
     _aligned_magnet_vectors: dict[str, list[Vector3d]] = {}
+    _time_data: dict[str, list[float]] = {}
+    _magnet_error_x: dict[str, float] = {}
+    _magnet_error_y: dict[str, float] = {}
+    _magnet_error_z: dict[str, float] = {}
+    _magnet_errors: dict[str, float] = {}
 
 
     @property
@@ -78,16 +83,21 @@ class MagneticFieldCalc(BaseModel):
     def get_data(self):
         for folder in self.get_dirs():
             path = os.path.join(self.data_path, folder)
-            if not os.path.exists(os.path.join(path, "Accelerometer.csv")):
-                continue
             if not os.path.exists(os.path.join(path, "Magnetometer.csv")):
                 continue
-            acceleration_data = pd.read_csv(os.path.join(path, "Accelerometer.csv"), header=1)
             magnet_data = pd.read_csv(os.path.join(path, "Magnetometer.csv"), header=1)
-            acceleration_vecs = [Vector3d.from_list([d[1], d[2], d[3]]) for d in acceleration_data.values]
+
+            if not os.path.exists(os.path.join(path, "Accelerometer.csv")):
+                acceleration_vecs = [Vector3d(x=0, y=0, z=1) for _ in range(len(magnet_data))]
+            else:
+                acceleration_data = pd.read_csv(os.path.join(path, "Accelerometer.csv"), header=1)
+                acceleration_vecs = [Vector3d.from_list([d[1], d[2], d[3]]) for d in acceleration_data.values]
+
             magnet_vecs = [Vector3d.from_list([d[1], d[2], d[3]]) for d in magnet_data.values]
+            time_data = [d[0] for d in magnet_data.values]
             self._acceleration_data[folder] = acceleration_vecs
             self._magnet_data[folder] = magnet_vecs
+            self._time_data[folder] = time_data
     
     def align_vector(self, gravity_vec: Vector3d, magnet_vec: Vector3d) -> Vector3d:
         rot = R.align_vectors(gravity_vec.to_list(), [0,0,1])[0]
@@ -98,6 +108,75 @@ class MagneticFieldCalc(BaseModel):
         for key, data in self.acceleration_data.items():
             aligned_magnet_vecs = [self.align_vector(g_vec, magnet_data) for g_vec, magnet_data in zip(data, self.magnet_data[key])]
             self._aligned_magnet_vectors[key] = aligned_magnet_vecs
+
+    def magnet_error_x(self):
+        if self._magnet_error_x:
+            return self._magnet_error_x
+        errors = {}
+        for key, data in self.aligned_magnet_vectors.items():
+            x_list = [d.x for d in data]
+            errors[key] = np.std(x_list)
+        self._magnet_error_x = errors
+        return errors
+
+    def magnet_error_y(self):
+        if self._magnet_error_y:
+            return self._magnet_error_y
+        errors = {}
+        for key, data in self.aligned_magnet_vectors.items():
+            y_list = [d.y for d in data]
+            errors[key] = np.std(y_list)
+        self._magnet_error_y = errors
+        return errors
+    
+    def magnet_error_z(self):
+        if self._magnet_error_z:
+            return self._magnet_error_z
+        errors = {}
+        for key, data in self.aligned_magnet_vectors.items():
+            z_list = [d.z for d in data]
+            errors[key] = np.std(z_list)
+        self._magnet_error_z = errors
+        return errors
+    
+    def magnet_error(self):
+        if self._magnet_errors:
+            return self._magnet_errors
+        errors = {}
+        for key, data in self.aligned_magnet_vectors.items():
+            x_list = [d.x for d in data]
+            y_list = [d.y for d in data]
+            z_list = [d.z for d in data]
+            errors[key] = np.sqrt(np.std(x_list)**2 + np.std(y_list)**2 + np.std(z_list)**2)
+        self._magnet_errors = errors
+        return errors
+    
+    def declination_error(self):
+        errors = {}
+        for key, data in self.aligned_magnet_vectors.items():
+            average_vector = self.average_vector(data)
+            x = average_vector.x
+            y = average_vector.y
+
+            y_error = (x / (x**2 + y**2)) * self.magnet_error_y()[key]
+            x_error = (y / (x**2 + y**2)) * self.magnet_error_x()[key]
+            errors[key] = np.sqrt(x_error**2 + y_error**2)
+        return errors
+
+    def inclination_error(self):
+        errors = {}
+        for key, data in self.aligned_magnet_vectors.items():
+            average_vector = self.average_vector(data)
+            x = average_vector.x
+            y = average_vector.y
+            z = average_vector.z
+            r = np.sqrt(x**2 + y**2)
+
+            x_error = (x*z / (r*(r**2 + z**2))) * self.magnet_error_x()[key]
+            y_error = (y*z / (r*(r**2 + z**2))) * self.magnet_error_y()[key]
+            z_error = (r / (r**2 + z**2)) * self.magnet_error_z()[key]
+            errors[key] = np.sqrt(x_error**2 + y_error**2 + z_error**2)
+        return errors
 
     @staticmethod
     def average_vector(vectors: list[Vector3d]):
@@ -135,7 +214,10 @@ class MagneticFieldCalc(BaseModel):
     def average_inclinations(self):
         average_inclination_dict = {key: self.average_inclination(magnet_vectors) for key, magnet_vectors in self.aligned_magnet_vectors.items()}
         return average_inclination_dict
-    
+
+    def relative_error(self, value, error):
+        return np.abs(error/value) * 100
+
     def print_info(self):
         def print_red(text):
             print(colorama.Fore.RED + colorama.Style.BRIGHT + text + colorama.Style.RESET_ALL)
@@ -150,12 +232,27 @@ class MagneticFieldCalc(BaseModel):
         print("\n")
         for key in self.get_dirs():
             print_red(f"Data set: {key}")
+            print("Average components:")
+            average_vector = self.average_vector(self.aligned_magnet_vectors[key])
+            x, y, z = average_vector.x, average_vector.y, average_vector.z
+            ex, ey, ez = self.magnet_error_x()[key], self.magnet_error_y()[key], self.magnet_error_z()[key]
+            rex, rey, rez = self.relative_error(x, ex), self.relative_error(y, ey), self.relative_error(z, ez)
+            print("\t X: ", end="")
+            print_green(f"{x:.3f} ± {ex:.3f} ({rex:.3f}%)")
+            print("\t Y: ", end="")
+            print_green(f"{y:.3f} ± {ey:.3f} ({rey:.3f}%)")
+            print("\t Z: ", end="")
+            print_green(f"{z:.3f} ± {ez:.3f} ({rez:.3f}%)")
+
             print("Average inclination:", end=" ")
-            print_green(f"{average_inclinations[key]}")
+            re_incl = self.relative_error(average_inclinations[key], self.inclination_error()[key])
+            print_green(f"{average_inclinations[key]:.3f} ± {self.inclination_error()[key]:.3f} ({re_incl:.3f}%)")
             print("Average declination:", end=" ")
-            print_green(f"{average_declinations[key]}")
+            re_decl = self.relative_error(average_declinations[key], self.declination_error()[key])
+            print_green(f"{average_declinations[key]:.3f} ± {self.declination_error()[key]:.3f} ({re_decl:.3f}%)")
             print("Average magnitude:", end=" ")
-            print_green(f"{average_magnitudes[key]}")
+            re_mag = self.relative_error(average_magnitudes[key], self.magnet_error()[key])
+            print_green(f"{average_magnitudes[key]:.3f} ± {self.magnet_error()[key]:.3f} ({re_mag:.3f}%)")
             print("\n")
 
     def normalize_vectors(self, vectors: list[Vector3d]):
@@ -225,8 +322,24 @@ class MagneticFieldCalc(BaseModel):
 
             plt.show()
 
+    def plot_components_single(self):
+        first_set = self.get_dirs()[1]
+        magnet_vectors = self.aligned_magnet_vectors[first_set]
+        time = self._time_data[first_set]
+        fig = plt.figure(figsize=(10,10))
+        ax = fig.subplots(3,1)
 
+        ax[0].plot(time, [v.x for v in magnet_vectors], "r", label="X")
+        ax[1].plot(time, [v.y for v in magnet_vectors], "g", label="Y")
+        ax[2].plot(time, [v.z for v in magnet_vectors], "b", label="Z")
 
+        for a in ax:
+            a.set_xlabel("Time (s)")
+            a.set_ylabel("Magnetic field (uT)")
+            a.legend()
+
+        plt.show()
+    
 if __name__ == "__main__":
     file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     magnet_calc = MagneticFieldCalc(data_path=file_path)
@@ -234,3 +347,4 @@ if __name__ == "__main__":
     magnet_calc.plot_magnet_vectors_3d()
     magnet_calc.plot_declination()
     magnet_calc.plot_inclination()
+    magnet_calc.plot_components_single()
