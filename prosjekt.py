@@ -160,7 +160,7 @@ class MagneticFieldCalc(BaseModel):
 
             y_error = (x / (x**2 + y**2)) * self.magnet_error_y()[key]
             x_error = (y / (x**2 + y**2)) * self.magnet_error_x()[key]
-            errors[key] = np.sqrt(x_error**2 + y_error**2)
+            errors[key] = np.rad2deg(np.sqrt(x_error**2 + y_error**2))
         return errors
 
     def inclination_error(self):
@@ -175,7 +175,7 @@ class MagneticFieldCalc(BaseModel):
             x_error = (x*z / (r*(r**2 + z**2))) * self.magnet_error_x()[key]
             y_error = (y*z / (r*(r**2 + z**2))) * self.magnet_error_y()[key]
             z_error = (r / (r**2 + z**2)) * self.magnet_error_z()[key]
-            errors[key] = np.sqrt(x_error**2 + y_error**2 + z_error**2)
+            errors[key] = np.rad2deg(np.sqrt(x_error**2 + y_error**2 + z_error**2))
         return errors
 
     @staticmethod
@@ -254,6 +254,34 @@ class MagneticFieldCalc(BaseModel):
             re_mag = self.relative_error(average_magnitudes[key], self.magnet_error()[key])
             print_green(f"{average_magnitudes[key]:.3f} ± {self.magnet_error()[key]:.3f} ({re_mag:.3f}%)")
             print("\n")
+        
+        print("\n")
+        keys = self.get_dirs()
+        keys = sorted(keys, key=lambda x: int(x.split("_")[2]))
+        print(keys)
+        for idx, key in enumerate(keys):
+            incl = average_inclinations[key]
+            e_incl = self.inclination_error()[key]
+            re_incl = self.relative_error(incl, e_incl)
+
+            decl = average_declinations[key]
+            e_decl = self.declination_error()[key]
+            re_decl = self.relative_error(decl, e_decl)
+
+            mag = average_magnitudes[key]
+            e_mag = self.magnet_error()[key]
+            re_mag = self.relative_error(mag, e_mag)
+
+            print(f"Måling {idx+1} & ${incl:.3f} \pm {e_incl:.3f} $ & ${re_incl:.3f} \% $ & ${decl:.3f} \pm {e_decl:.3f}$ & ${re_decl:.3f} \% $ \\\\")
+
+
+        for idx, key in enumerate(keys):
+            average_vector = self.average_vector(self.aligned_magnet_vectors[key])
+            x, y, z = average_vector.x, average_vector.y, average_vector.z
+            ex, ey, ez = self.magnet_error_x()[key], self.magnet_error_y()[key], self.magnet_error_z()[key]
+            rex, rey, rez = self.relative_error(x, ex), self.relative_error(y, ey), self.relative_error(z, ez)
+
+            print(f"Måling {idx+1} & ${x:.3f} \pm {ex:.3f} $ & ${rex:.3f} \% $ & ${y:.3f} \pm {ey:.3f}$ & ${rey:.3f} \% $ & ${z:.3f} \pm {ez:.3f}$ & ${rez:.3f} \% $ \\\\")
 
     def normalize_vectors(self, vectors: list[Vector3d]):
         return [v/v.magnitude for v in vectors]
